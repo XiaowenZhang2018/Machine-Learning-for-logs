@@ -1,0 +1,101 @@
+function unit_sim(RS, RD, bed_idx, mudRes, bh, sessionObject)
+Laudau = sessionObject.rCSF.a_Wells(1);
+
+resEM=[];
+layer = 3;
+sample_num = 5;
+for i = bed_idx:bed_idx+layer+1
+    idx_RS=find(RS.depthData>=Laudau.rEM.mdPetroBB(i) & RS.depthData<=Laudau.rEM.mdPetroBB(i+1));
+    idx_RD=find(RS.depthData>=Laudau.rEM.mdPetroBB(i) & RS.depthData<=Laudau.rEM.mdPetroBB(i+1));
+    find(RD.depthdata(idx_RD)==max(RD.rawData(idx_RD))
+    resEM(i-bed_idx+1)=mean(RD.rawData(idx_RD));
+end
+% Get csf, and well to run sims
+csf = sessionObject.rCSF;
+wellName = ['sim_3L_' num2str(bed_idx)];
+well = csf.addNewWell(wellName);
+% Set up focus limits, and make sure modeling limits are the same
+fl = [Laudau.rEM.mdPetroBB(bed_idx)-20*0.1524 Laudau.rEM.mdPetroBB(bed_idx+layer+1)+20*0.1524];
+well.FocusLimits = fl;
+well.modelingLimits = fl;
+% Get earth model, and set up mud resistivity
+em = well.rEM;
+em.setProperty('propName', 'Resistivity', 'value', mudRes, 'zoneIdx', 1);
+em.setProperty('propName', 'Radius', 'value', bh/39.3701, 'zoneIdx', 1);
+% Get resistivity simulator, and set settings
+resSim = well.Simulators.Resistivity;
+reSim.SamplingInterval = 0.1524;
+resSim.Tool = resSim.allowedTools.DLL_DualLaterolog;
+resSim.Variant = resSim.allowedVariants.vrnt_2_DSchlumberger;
+
+% Make one dummy run, so that we have the output log set in existance, and
+% we don't have to retrieve it within the loop
+resSim.run;
+ls = well.getLogSetByName( resSim.OutputLogSet );
+logDepth = ls.getLogByName('Depth');
+logRLLS = ls.getLogByName('RLLS');
+logRLLD = ls.getLogByName('RLLD');
+    
+% Generate database for single boundary (2 layers)
+em.deleteBB('mdSegment', fl);
+for i = bed_idx+1:bed_idx+layer+1
+    em.addBB('md', Laudau.rEM.mdPetroBB(i));
+end
+% We are going to save results in a structure with a field per each
+% run, here we initialize it with a field just describing the bh rad
+% Go over each Resistivity Value
+resRange=zeros(layer,sample_num);
+for i = 2:layer+1
+resRange(i-1,:) = logspace(log10(resEM(i)/2), log10(resEM(i)*2), sample_num);
+end
+resTop = resEM(1);
+resBott = resEM(end);
+ind = fullfact(sample_num*ones(1,layer));
+resComb = [resRange(1,ind(:,1))',resRange(2,ind(:,2))', resRange(3,ind(:,3))'];
+
+for i = 1:size(resComb,1)
+     res_1 = resComb(i,1); res_2 = resComb(i,2);res_3 = resComb(i,3);
+     % Set resistivity values in model
+     em.setProperty('propName', 'Resistivity', ...
+                    'value', [resTop; res_1; res_2; res_3; resBott], ...
+                    'zoneIdx', 'formation');
+    % Run Simulation
+    resSim.run;
+    % Retrieve results, and store in s_results
+    % Make sure the field has no dots by replacing them with 'o'
+    fieldName = strrep(['res_' num2str(res_1) '_' num2str(res_2) '_' num2str(res_3)], ...
+                        '.', 'o');
+    s_results.(fieldName).resTop = resTop;
+    s_results.(fieldName).resBott = resBott;
+    s_results.(fieldName).res_1 = res_1;
+    s_results.(fieldName).res_2 = res_2;
+    s_results.(fieldName).res_3 = res_3;
+    s_results.(fieldName).simRes = ...
+         [logDepth.rawData./3.28084, logRLLS.rawData, logRLLD.rawData];           
+    display(fieldName);
+end
+depth=logDepth.rawData/3.28084;
+idx=find(RS.depthData>=depth(1) & RS.depthData<=depth(end));
+fieldData=[RS.rawData(idx), RD.rawData(idx)];
+fdr_sim = ['sim_bed_' num2str(bed_idx) '.mat'];
+fdr_field = ['field_bed_' num2str(bed_idx) '.mat'];
+save(fdr_sim,'s_results');
+save(fdr_field,'fieldData')
+%% Verify
+% well_verify = csf.addNewWell('Verify');
+% well_verify.FocusLimits = fl;
+% well_verify.modelingLimits = fl;
+% em_verify = well_verify.rEM;
+% em_verify.setProperty('propName', 'Resistivity', 'value', mudRes, 'zoneIdx', 1);
+% em_verify.setProperty('propName', 'Radius', 'value', bh/39.3701, 'zoneIdx', 1);
+% em_verify.deleteBB('mdSegment', fl);
+% for i = bed_idx+1:bed_idx+layer+1
+%     em_verify.addBB('md', Laudau.rEM.mdPetroBB(i));
+% end
+% em_verify.setProperty('propName', 'Resistivity', ...
+%                 'value', [resTop; 3.9282327; 2.4721475; 3.5952265; resBott], ...
+%                 'zoneIdx', 'formation');
+% resSim_verify = well.Simulators.Resistivity;
+% reSim_verify.SamplingInterval = 0.1524;
+% resSim_verify.Tool = resSim.allowedTools.DLL_DualLaterolog;
+% resSim_verify.Variant = resSim.allowedVariants.vrnt_2_DSchlumberger;
